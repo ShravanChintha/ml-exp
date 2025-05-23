@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: clip-image-analysis
+    env: docker
+    dockerfilePath: ./Dockerfile
+    buildCommand: docker build -t clip-image-analysis .
+    startCommand: streamlit run app.py --server.address=0.0.0.0 --server.port=$PORT
+    envVars:
+      - key: PYTHONHTTPSVERIFY
+        value: "0"
+      - key: HF_HUB_DISABLE_SSL_VERIFICATION
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /
+    autoDeploy: true

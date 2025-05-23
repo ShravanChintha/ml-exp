@@ -1,0 +1,397 @@
+# All-in-one Kubernetes deployment for CLIP Image Analysis application
+# This file contains all resources needed to deploy the application and monitoring stack
+---
+# ==================== APPLICATION CONFIGURATION ====================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clip-app-config
+  labels:
+    app: clip-app
+    component: config
+data:
+  # Environment variables to handle SSL issues with Hugging Face
+  PYTHONUNBUFFERED: "1"
+  PYTHONHTTPSVERIFY: "0"
+  CURL_CA_BUNDLE: ""
+  SSL_CERT_FILE: ""
+  HF_HUB_DISABLE_SSL_VERIFICATION: "1"
+  REQUESTS_CA_BUNDLE: ""
+---
+# ==================== PERSISTENT STORAGE ====================
+# This defines the storage for model files so they persist across pod restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clip-model-storage
+  labels:
+    app: clip-app
+    component: storage
+spec:
+  # ReadWriteOnce means the volume can be mounted as read-write by a single node
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi  # 1GB storage for model files
+---
+# ==================== APPLICATION DEPLOYMENT ====================
+# The Deployment defines how to run the application and how many replicas to maintain
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clip-app
+  labels:
+    app: clip-app
+    component: application
+spec:
+  # Start with 1 replica, HPA will scale this based on load
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clip-app
+  template:
+    metadata:
+      labels:
+        app: clip-app
+      # These annotations enable Prometheus to automatically discover and scrape metrics
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8501"
+    spec:
+      containers:
+      - name: clip-app
+        image: clip-app:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8501  # Streamlit web UI
+        - containerPort: 8000  # Prometheus metrics endpoint
+        command: ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]
+        # Resource requirements help Kubernetes schedule and manage the pod effectively
+        resources:
+          requests:
+            memory: "2Gi"   # Request 2GB memory
+            cpu: "500m"     # Request 0.5 CPU cores
+          limits:
+            memory: "4Gi"   # Limit to 4GB memory
+            cpu: "1000m"    # Limit to 1 CPU core
+        # Import environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: clip-app-config
+        # Mount the persistent volume for model storage
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: clip-model-storage
+---
+# ==================== APPLICATION SERVICE ====================
+# The Service exposes the application to the network
+apiVersion: v1
+kind: Service
+metadata:
+  name: clip-app-service
+  labels:
+    app: clip-app
+    component: service
+spec:
+  selector:
+    app: clip-app
+  ports:
+  - port: 8501
+    targetPort: 8501
+    name: web-ui
+  - port: 8000
+    targetPort: 8000
+    name: metrics
+  # LoadBalancer provides an external IP address to access the service
+  type: LoadBalancer
+---
+# ==================== AUTO-SCALING ====================
+# The HorizontalPodAutoscaler automatically scales the number of pods based on CPU usage
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: clip-app-hpa
+  labels:
+    app: clip-app
+    component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: clip-app
+  minReplicas: 1      # Minimum number of replicas
+  maxReplicas: 5      # Maximum number of replicas
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale up when CPU usage reaches 70%
+---
+# ==================== MONITORING - PROMETHEUS RBAC ====================
+# RBAC configuration grants Prometheus permissions to access Kubernetes API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  labels:
+    app: monitoring
+    component: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    app: monitoring
+    component: prometheus
+rules:
+# These rules allow Prometheus to access various Kubernetes resources for monitoring
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy  # For collecting node metrics
+  - services     # For service discovery
+  - endpoints    # For endpoint discovery
+  - pods         # For pod discovery and metrics
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses    # For ingress monitoring
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]  # To access metrics endpoints
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    app: monitoring
+    component: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: default  # Change this if deploying to a different namespace
+---
+# ==================== MONITORING - PROMETHEUS CONFIG ====================
+# ConfigMap containing Prometheus configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels:
+    app: monitoring
+    component: prometheus
+data:
+  prometheus.yml: |
+    # Global settings
+    global:
+      scrape_interval: 15s      # How frequently to scrape targets
+      evaluation_interval: 15s  # How frequently to evaluate rules
+    
+    # Scrape configurations (where Prometheus finds metrics)
+    scrape_configs:
+      # This job discovers and scrapes pod metrics
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+        - role: pod
+        relabel_configs:
+        # Only scrape pods with prometheus.io/scrape=true annotation
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        # Use custom metrics path if specified
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        # Use the specified port for scraping
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        # Add pod labels as prometheus labels
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        # Add namespace as label
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        # Add pod name as label
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: kubernetes_pod_name
+
+      # This job discovers and scrapes node metrics
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+        - role: node
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics
+        
+      # This job scrapes the Kubernetes API server metrics
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+        - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+---
+# ==================== MONITORING - PROMETHEUS DEPLOYMENT ====================
+# Deployment for Prometheus server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app: monitoring
+    component: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitoring
+      component: prometheus
+  template:
+    metadata:
+      labels:
+        app: monitoring
+        component: prometheus
+    spec:
+      serviceAccountName: prometheus  # Use the ServiceAccount with proper permissions
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.44.0
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/prometheus
+        - name: prometheus-storage
+          mountPath: /prometheus
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/prometheus"
+        - "--web.console.libraries=/etc/prometheus/console_libraries"
+        - "--web.console.templates=/etc/prometheus/consoles"
+        - "--web.enable-lifecycle"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 500Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+      volumes:
+      - name: config-volume
+        configMap:
+          name: prometheus-config
+      - name: prometheus-storage
+        emptyDir: {}  # Using emptyDir for simplicity, can be changed to PVC for persistence
+---
+# ==================== MONITORING - PROMETHEUS SERVICE ====================
+# Service to expose Prometheus UI
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app: monitoring
+    component: prometheus
+spec:
+  selector:
+    app: monitoring
+    component: prometheus
+  ports:
+  - port: 9090
+    targetPort: 9090
+  type: ClusterIP  # Internal access only, use port-forwarding to access
+---
+# ==================== MONITORING - GRAFANA DEPLOYMENT ====================
+# Deployment for Grafana dashboard
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app: monitoring
+    component: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitoring
+      component: grafana
+  template:
+    metadata:
+      labels:
+        app: monitoring
+        component: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:10.1.0
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: grafana-storage
+          mountPath: /var/lib/grafana
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: "admin"  # Default admin password, change in production
+        - name: GF_USERS_ALLOW_SIGN_UP
+          value: "false"  # Disable user signup
+        resources:
+          requests:
+            cpu: 200m
+            memory: 200Mi
+          limits:
+            cpu: 500m
+            memory: 500Mi
+      volumes:
+      - name: grafana-storage
+        emptyDir: {}  # Using emptyDir for simplicity, can be changed to PVC for persistence
+---
+# ==================== MONITORING - GRAFANA SERVICE ====================
+# Service to expose Grafana UI
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app: monitoring
+    component: grafana
+spec:
+  selector:
+    app: monitoring
+    component: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+  type: LoadBalancer  # External access
