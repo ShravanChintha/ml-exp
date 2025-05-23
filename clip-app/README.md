@@ -1,128 +1,223 @@
-# Image Analysis with CLIP
+# CLIP Image Analysis App - Render Kubernetes Deployment
 
-This is a simple Streamlit application that uses OpenAI's CLIP (Contrastive Language-Image Pre-training) model to analyze the content of uploaded images.
+A Streamlit application that uses OpenAI's CLIP model to analyze and classify images. This project is configured for seamless deployment to Render.com using Kubernetes with complete CI/CD capabilities.
 
-## Features
+## Table of Contents
 
-- Upload images (JPG, JPEG, PNG)
-- Get analysis of what's in the image using CLIP model
-- Display confidence levels for different categories
-- Option to download and use the model locally to avoid SSL issues
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [Local Development](#local-development)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Kubernetes Deployment](#kubernetes-deployment)
+- [Monitoring](#monitoring)
+- [Troubleshooting](#troubleshooting)
 
-## Running Locally
+## Project Overview
 
-1. Install the requirements:
+This application allows users to upload images, which are then analyzed using OpenAI's CLIP (Contrastive Language-Image Pre-Training) model. The model identifies objects, scenes, and other content within the uploaded images, providing confidence scores for each detection.
+
+### Key Features
+
+- **Image Upload and Analysis**: Upload images to be analyzed by the CLIP model
+- **SSL Certificate Handling**: Built-in fixes for SSL certificate issues when fetching models
+- **Prometheus Monitoring**: Track performance metrics like response time and error rates
+- **Kubernetes Deployment**: Scalable infrastructure with auto-scaling capabilities
+- **CI/CD Pipeline**: Automated testing, building, and deployment on code changes
+
+### Tech Stack
+
+- **Frontend & Backend**: Streamlit
+- **ML Model**: OpenAI's CLIP (via Hugging Face Transformers)
+- **Infrastructure**: Kubernetes on Render.com
+- **Monitoring**: Prometheus with metrics exporter
+- **CI/CD**: Render.com built-in CI/CD with GitHub integration
+
+## Architecture
+
+```
+┌─────────────────┐     ┌───────────────────┐     ┌───────────────┐
+│                 │     │                   │     │               │
+│  User/Browser   │────▶│  Streamlit App    │────▶│  CLIP Model   │
+│                 │     │                   │     │               │
+└─────────────────┘     └───────────────────┘     └───────────────┘
+                               │                         │
+                               │                         │
+                               ▼                         │
+                        ┌──────────────┐                 │
+                        │  Prometheus  │◀────────────────┘
+                        │  Monitoring  │
+                        └──────────────┘
+```
+
+### Components
+
+1. **Streamlit App (`app.py`)**: The main application that handles user interactions, image uploads, and displays analysis results
+2. **SSL Fix Module (`ssl_fix.py`)**: Handles SSL certificate issues when downloading models from Hugging Face
+3. **Metrics Module (`metrics.py`)**: Collects and exposes performance metrics for Prometheus monitoring
+4. **Kubernetes Config (`k8s.yaml`)**: Defines the Kubernetes resources for deployment
+5. **Dockerfile**: Builds the container image for the application
+6. **Render Config (`render.yaml`)**: Configures deployment to Render.com
+
+## Local Development
+
+### Prerequisites
+
+- Python 3.10+
+- Docker
+- Git
+
+### Setup and Installation
+
+1. Clone the repository:
+   ```bash
+   git clone <your-repository-url>
+   cd clip-app
    ```
+
+2. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
 
-2. Run the application:
-   - Standard version:
-     ```
-     streamlit run app.py
-     ```
-   - Version with local model support (recommended if you have SSL issues):
-     ```
-     streamlit run app_local.py
-     ```
-
-3. If you encounter SSL certificate issues, you can pre-download the model:
-   ```
-   python download_model.py
+3. Run the application locally:
+   ```bash
+   streamlit run app.py
    ```
 
-## Deployment Options
+### Docker Development
 
-### Docker Deployment
-```
-docker-compose up -d
+Build and run the Docker container locally:
+
+```bash
+docker build -t clip-app:latest .
+docker run -p 8501:8501 clip-app:latest
 ```
 
-### Render.com (Free)
-See [RENDER-DEPLOYMENT.md](RENDER-DEPLOYMENT.md) for detailed instructions, or run:
+## CI/CD Pipeline
+
+This project uses Render.com's built-in CI/CD capabilities with Kubernetes integration.
+
+### Workflow
+
+1. **Code Push**: Push code changes to the connected GitHub repository
+2. **Build Trigger**: Render automatically detects changes and initiates a build
+3. **Docker Build**: Builds Docker image using the Dockerfile
+4. **Kubernetes Deployment**: Creates or updates Kubernetes resources
+5. **Health Checks**: Verifies application health before completing deployment
+6. **Rollback**: Automatic rollback if deployment fails
+
+### Configuration
+
+The CI/CD pipeline is configured in `render.yaml`:
+
+```yaml
+services:
+  - type: kubernetes
+    name: clip-image-analysis
+    env: docker
+    dockerfilePath: ./Dockerfile
+    k8sConfig:
+      manifestPath: k8s.yaml
+    envVars:
+      - key: PYTHONHTTPSVERIFY
+        value: "0"
+      - key: HF_HUB_DISABLE_SSL_VERIFICATION
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /
+    autoDeploy: true
 ```
-./deploy-to-render.sh
+
+### Preview Environments
+
+Preview environments are automatically created for pull requests:
+
+1. Create a new branch for feature development
+2. Submit a pull request to the main branch
+3. Render automatically creates a preview environment
+4. Test the feature in the preview before merging
+5. Preview environments automatically expire after a configurable period
+
+## Kubernetes Deployment
+
+The application is deployed on Render.com using Kubernetes for scalability and reliability.
+
+### Kubernetes Resources
+
+- **Deployment**: Manages the application pods
+- **Service**: Exposes the application to the internet
+- **ConfigMap**: Stores configuration data
+- **PersistentVolumeClaim**: Stores model files persistently
+- **HorizontalPodAutoscaler**: Automatically scales pods based on CPU usage
+
+### Deployment Process
+
+1. Push your code to GitHub
+2. Connect your GitHub repository to Render.com
+3. Render automatically deploys the application using the configuration in `render.yaml` and `k8s.yaml`
+4. Monitor deployment status in the Render dashboard
+
+### Manual Deployment (Optional)
+
+If you prefer manual deployment or need to deploy from local:
+
+```bash
+# Install Render CLI
+pip install render
+
+# Log in
+render login
+
+# Deploy using your Kubernetes config
+render deploy
 ```
 
-### Heroku (Free Tier)
-```
-heroku create
-git add .
-git commit -m "Deploy to Heroku"
-git push heroku main
-```
+### Scaling Configuration
 
-### Kubernetes
-See [KUBERNETES-GUIDE.md](KUBERNETES-GUIDE.md) for detailed instructions on deploying with Kubernetes.
+The application automatically scales based on CPU usage:
 
-## Docker Deployment
+- **Minimum Replicas**: 1
+- **Maximum Replicas**: 3
+- **Target CPU Utilization**: 80%
 
-### Using Docker Compose (Recommended)
+## Monitoring
 
-1. Build and start the container:
-   ```
-   docker-compose up -d
-   ```
+The application includes Prometheus monitoring for performance tracking.
 
-2. Access the application at http://localhost:8501
+### Available Metrics
 
-3. To stop the application:
-   ```
-   docker-compose down
-   ```
+- **Image Upload Rate**: Number of images uploaded over time
+- **Analysis Error Rate**: Percentage of analysis requests that result in errors
+- **Analysis Duration**: Time taken to analyze images
+- **Memory Usage**: Application memory consumption
+- **CPU Usage**: Application CPU utilization
 
-### Using Docker Directly
+### Viewing Metrics
 
-1. Build the Docker image:
-   ```
-   docker build -t image-analyzer .
-   ```
+1. Access Prometheus metrics at `http://<your-app-url>:8000/metrics`
+2. For Render deployments, metrics can be accessed through the Render dashboard
 
-2. Run the container:
-   ```
-   docker run -p 8501:8501 image-analyzer
-   ```
+## Troubleshooting
 
-3. Access the application at http://localhost:8501
+### Common Issues
 
-## Troubleshooting SSL Certificate Issues
+1. **SSL Certificate Errors**:
+   - The application includes `ssl_fix.py` to handle certificate issues
+   - Ensure environment variables `PYTHONHTTPSVERIFY=0` and `HF_HUB_DISABLE_SSL_VERIFICATION=1` are set
 
-If you encounter SSL certificate verification errors when loading the model, try the following solutions:
+2. **Model Download Failures**:
+   - Check internet connectivity
+   - Verify Hugging Face is accessible from your deployment environment
 
-1. **Use the Local Model Version**: Run `streamlit run app_local.py` which includes a button to download the model locally.
+3. **Kubernetes Deployment Issues**:
+   - Check logs in the Render dashboard
+   - Verify that the Kubernetes configuration in `k8s.yaml` is valid
 
-2. **Pre-download the Model**: Run `python download_model.py` to download the model files before starting the app.
+### Getting Help
 
-3. **Update Certificates**: Make sure your system's CA certificates are up to date.
+If you encounter issues not covered in this documentation, please:
 
-4. **Docker Deployment with SSL Fix**: The Docker setup has been enhanced to handle SSL certificate issues:
-   - Includes proper certificate installation
-   - Uses fallback model if download fails
-   - Sets proper environment variables for SSL
-   - Provides an entrypoint script that refreshes certificates
-
-5. **macOS Certificate Helper**: For macOS users, run the included helper script:
-   ```
-   ./fix_ssl_macos.sh
-   ```
-   This will configure SSL certificates properly for macOS.
-
-6. **Manual SSL Fix**: Set these environment variables before running the app:
-   ```
-   export PYTHONHTTPSVERIFY=0
-   export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt  # Linux
-   export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt  # Linux
-   # For macOS:
-   # export REQUESTS_CA_BUNDLE=/etc/ssl/cert.pem
-   # export SSL_CERT_FILE=/etc/ssl/cert.pem
-   ```
-
-## How It Works
-
-The application uses the CLIP model from the Hugging Face Transformers library. CLIP (Contrastive Language-Image Pre-training) was trained on a variety of image-text pairs and can understand both images and text.
-
-When you upload an image, the model compares it against a set of predefined categories and returns confidence scores for each category.
-
-## Requirements
-
-See requirements.txt for the full list of dependencies.
+1. Check the application logs in the Render dashboard
+2. Open an issue in the GitHub repository with detailed error information
+3. Include deployment environment details when reporting issues

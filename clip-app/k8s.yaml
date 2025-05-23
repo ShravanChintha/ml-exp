@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clip-image-analysis
+  labels:
+    app: clip-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clip-app
+  template:
+    metadata:
+      labels:
+        app: clip-app
+    spec:
+      containers:
+      - name: clip-image-analysis
+        image: ${RENDER_IMAGE_URL}
+        ports:
+        - containerPort: 8501
+        env:
+        - name: PYTHONHTTPSVERIFY
+          value: "0"
+        - name: HF_HUB_DISABLE_SSL_VERIFICATION
+          value: "1"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PORT
+          value: "8501"
+        resources:
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+          requests:
+            memory: "1Gi"
+            cpu: "0.5"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: clip-model-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clip-image-analysis
+  labels:
+    app: clip-app
+spec:
+  selector:
+    app: clip-app
+  ports:
+  - port: 80
+    targetPort: 8501
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clip-model-storage
+  labels:
+    app: clip-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: clip-app-hpa
+  labels:
+    app: clip-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: clip-image-analysis
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
