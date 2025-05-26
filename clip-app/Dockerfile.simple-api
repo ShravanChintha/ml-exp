@@ -1,0 +1,27 @@
+# Dockerfile for the Simple API
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY simple_api.py .
+COPY kafka_config.py .
+COPY ssl_fix.py .
+
+# Create models directory
+RUN mkdir -p /app/models
+
+# Expose port
+EXPOSE 8080
+
+# Run the simple API
+CMD ["python", "simple_api.py"]

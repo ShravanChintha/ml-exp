@@ -16,3 +16,9 @@ nest_asyncio
 certifi
 prometheus-client
 psutil
+kafka-python
+websockets
+asyncio
+redis
+redis
+uuid
